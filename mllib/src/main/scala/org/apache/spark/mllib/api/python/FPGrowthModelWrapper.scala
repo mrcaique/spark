@@ -30,4 +30,9 @@ private[python] class FPGrowthModelWrapper(model: FPGrowthModel[Any])
   def getFreqItemsets: RDD[Array[Any]] = {
     SerDe.fromTuple2RDD(model.freqItemsets.map(x => (x.javaItems, x.freq)))
   }
+
+  def getAssociationRules(minConfidence: Double): RDD[Array[Any]] = {
+    SerDe.fromTuple2RDD(model.generateAssociationRules(minConfidence)
+    	.map(x => (x.javaAntecedent, x.javaConsequent)))
+  }
 }

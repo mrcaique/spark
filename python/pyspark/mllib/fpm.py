@@ -23,7 +23,7 @@ from pyspark import SparkContext, since
 from pyspark.rdd import ignore_unicode_prefix
 from pyspark.mllib.common import JavaModelWrapper, callMLlibFunc, inherit_doc
 
-__all__ = ['FPGrowth', 'FPGrowthModel', 'PrefixSpan', 'PrefixSpanModel']
+__all__ = ['FPGrowth', 'FPGrowthModel', 'PrefixSpan', 'PrefixSpanModel', 'AssociationRules']
 
 
 @inherit_doc
@@ -51,6 +51,12 @@ class FPGrowthModel(JavaModelWrapper):
         Returns the frequent itemsets of this model.
         """
         return self.call("getFreqItemsets").map(lambda x: (FPGrowth.FreqItemset(x[0], x[1])))
+
+    def generateAssociationRules(self, minConfidence=0.6):
+        """
+        Returns the association rules generated for this model.
+        """
+        return self.call("getAssociationRules", minConfidence).map(lambda x: (AssociationRules.Rule(x[0], x[1])))
 
 
 class FPGrowth(object):
@@ -82,6 +88,17 @@ class FPGrowth(object):
         Represents an (items, freq) tuple.
 
         .. versionadded:: 1.4.0
+        """
+
+class AssociationRules(object):
+
+    #@classmethod
+    #def train(cls, data, minConfidence=0.6):
+    #    return callMLlibFunc("trainAssociationRules", data, float(minConfidence))
+
+    class Rule(namedtuple("Rule", ["antecedent", "consequent"])):
+        """
+        Represents an (antecedent, consequent) tuple.
         """
 
 

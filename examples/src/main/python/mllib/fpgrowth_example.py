@@ -28,6 +28,13 @@ if __name__ == "__main__":
     transactions = data.map(lambda line: line.strip().split(' '))
     model = FPGrowth.train(transactions, minSupport=0.2, numPartitions=10)
     result = model.freqItemsets().collect()
+
     for fi in result:
         print(fi)
     # $example off$
+
+    minConfidence = 0.8
+    associations = model.generateAssociationRules(minConfidence).collect()
+
+    for ar in associations:
+        print(ar)
