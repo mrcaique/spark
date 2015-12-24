@@ -92,9 +92,9 @@ class FPGrowth(object):
 
 class AssociationRules(object):
 
-    #@classmethod
-    #def train(cls, data, minConfidence=0.6):
-    #    return callMLlibFunc("trainAssociationRules", data, float(minConfidence))
+    @classmethod
+    def train(cls, data, minConfidence=0.8):
+        return callMLlibFunc("trainAssociationRules", data, float(minConfidence))
 
     class Rule(namedtuple("Rule", ["antecedent", "consequent"])):
         """
