@@ -17,6 +17,8 @@
 
 package org.apache.spark.sql.hive
 
+import scala.util.control.NonFatal
+
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.test.SQLTestUtils
 
@@ -27,6 +29,7 @@ class LogicalPlanToSQLSuite extends SQLBuilderTest with SQLTestUtils {
     sql("DROP TABLE IF EXISTS t0")
     sql("DROP TABLE IF EXISTS t1")
     sql("DROP TABLE IF EXISTS t2")
+
     sqlContext.range(10).write.saveAsTable("t0")
 
     sqlContext
@@ -46,29 +49,28 @@ class LogicalPlanToSQLSuite extends SQLBuilderTest with SQLTestUtils {
 
   private def checkHiveQl(hiveQl: String): Unit = {
     val df = sql(hiveQl)
-    val convertedSQL = new SQLBuilder(df).toSQL
 
-    if (convertedSQL.isEmpty) {
-      fail(
-        s"""Cannot convert the following HiveQL query plan back to SQL query string:
-           |
-           |# Original HiveQL query string:
-           |$hiveQl
-           |
-           |# Resolved query plan:
-           |${df.queryExecution.analyzed.treeString}
-         """.stripMargin)
+    val convertedSQL = try new SQLBuilder(df).toSQL catch {
+      case NonFatal(e) =>
+        fail(
+          s"""Cannot convert the following HiveQL query plan back to SQL query string:
+             |
+             |# Original HiveQL query string:
+             |$hiveQl
+             |
+             |# Resolved query plan:
+             |${df.queryExecution.analyzed.treeString}
+           """.stripMargin)
     }
 
-    val sqlString = convertedSQL.get
     try {
-      checkAnswer(sql(sqlString), df)
+      checkAnswer(sql(convertedSQL), df)
     } catch { case cause: Throwable =>
       fail(
         s"""Failed to execute converted SQL string or got wrong answer:
            |
            |# Converted SQL query string:
-           |$sqlString
+           |$convertedSQL
            |
            |# Original HiveQL query string:
            |$hiveQl
@@ -166,5 +168,68 @@ class LogicalPlanToSQLSuite extends SQLBuilderTest with SQLTestUtils {
         checkHiveQl(s"SELECT id FROM $tableName")
       }
     }
+  }
+
+  test("plans with non-SQL expressions") {
+    sqlContext.udf.register("foo", (_: Int) * 2)
+    intercept[UnsupportedOperationException](new SQLBuilder(sql("SELECT foo(id) FROM t0")).toSQL)
+  }
+
+  test("named expression in column names shouldn't be quoted") {
+    def checkColumnNames(query: String, expectedColNames: String*): Unit = {
+      checkHiveQl(query)
+      assert(sql(query).columns === expectedColNames)
+    }
+
+    // Attributes
+    checkColumnNames(
+      """SELECT * FROM (
+        |  SELECT 1 AS a, 2 AS b, 3 AS `we``ird`
+        |) s
+      """.stripMargin,
+      "a", "b", "we`ird"
+    )
+
+    checkColumnNames(
+      """SELECT x.a, y.a, x.b, y.b
+        |FROM (SELECT 1 AS a, 2 AS b) x
+        |INNER JOIN (SELECT 1 AS a, 2 AS b) y
+        |ON x.a = y.a
+      """.stripMargin,
+      "a", "a", "b", "b"
+    )
+
+    // String literal
+    checkColumnNames(
+      "SELECT 'foo', '\"bar\\''",
+      "foo", "\"bar\'"
+    )
+
+    // Numeric literals (should have CAST or suffixes in column names)
+    checkColumnNames(
+      "SELECT 1Y, 2S, 3, 4L, 5.1, 6.1D",
+      "1", "2", "3", "4", "5.1", "6.1"
+    )
+
+    // Aliases
+    checkColumnNames(
+      "SELECT 1 AS a",
+      "a"
+    )
+
+    // Complex type extractors
+    checkColumnNames(
+      """SELECT
+        |  a.f1, b[0].f1, b.f1, c["foo"], d[0]
+        |FROM (
+        |  SELECT
+        |    NAMED_STRUCT("f1", 1, "f2", "foo") AS a,
+        |    ARRAY(NAMED_STRUCT("f1", 1, "f2", "foo")) AS b,
+        |    MAP("foo", 1) AS c,
+        |    ARRAY(1) AS d
+        |) s
+      """.stripMargin,
+      "f1", "b[0].f1", "f1", "c[foo]", "d[0]"
+    )
   }
 }
