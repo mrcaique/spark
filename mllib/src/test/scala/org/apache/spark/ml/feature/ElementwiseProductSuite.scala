@@ -15,9 +15,21 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.catalyst.catalog
+package org.apache.spark.ml.feature
 
-/** Test suite for the [[InMemoryCatalog]]. */
-class InMemoryCatalogSuite extends CatalogTestCases {
-  override protected def newEmptyCatalog(): ExternalCatalog = new InMemoryCatalog
+import org.apache.spark.SparkFunSuite
+import org.apache.spark.ml.util.DefaultReadWriteTest
+import org.apache.spark.mllib.linalg.Vectors
+import org.apache.spark.mllib.util.MLlibTestSparkContext
+
+class ElementwiseProductSuite
+  extends SparkFunSuite with MLlibTestSparkContext with DefaultReadWriteTest {
+
+  test("read/write") {
+    val ep = new ElementwiseProduct()
+      .setInputCol("myInputCol")
+      .setOutputCol("myOutputCol")
+      .setScalingVec(Vectors.dense(0.1, 0.2))
+    testDefaultReadWrite(ep)
+  }
 }
