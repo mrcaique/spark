@@ -19,47 +19,35 @@ package org.apache.spark.examples.ml;
 
 import org.apache.spark.SparkConf;
 import org.apache.spark.api.java.JavaSparkContext;
-import org.apache.spark.sql.SQLContext;
-
 // $example on$
-import java.util.Arrays;
-
-import org.apache.spark.api.java.JavaRDD;
-import org.apache.spark.ml.feature.StopWordsRemover;
+import org.apache.spark.ml.feature.MaxAbsScaler;
+import org.apache.spark.ml.feature.MaxAbsScalerModel;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
-import org.apache.spark.sql.RowFactory;
-import org.apache.spark.sql.types.DataTypes;
-import org.apache.spark.sql.types.Metadata;
-import org.apache.spark.sql.types.StructField;
-import org.apache.spark.sql.types.StructType;
 // $example off$
+import org.apache.spark.sql.SQLContext;
 
-public class JavaStopWordsRemoverExample {
+public class JavaMaxAbsScalerExample {
 
   public static void main(String[] args) {
-    SparkConf conf = new SparkConf().setAppName("JavaStopWordsRemoverExample");
+    SparkConf conf = new SparkConf().setAppName("JavaMaxAbsScalerExample");
     JavaSparkContext jsc = new JavaSparkContext(conf);
     SQLContext jsql = new SQLContext(jsc);
 
     // $example on$
-    StopWordsRemover remover = new StopWordsRemover()
-      .setInputCol("raw")
-      .setOutputCol("filtered");
+    Dataset<Row> dataFrame = jsql.read().format("libsvm").load("data/mllib/sample_libsvm_data.txt");
+    MaxAbsScaler scaler = new MaxAbsScaler()
+        .setInputCol("features")
+        .setOutputCol("scaledFeatures");
 
-    JavaRDD<Row> rdd = jsc.parallelize(Arrays.asList(
-      RowFactory.create(Arrays.asList("I", "saw", "the", "red", "baloon")),
-      RowFactory.create(Arrays.asList("Mary", "had", "a", "little", "lamb"))
-    ));
+    // Compute summary statistics and generate MaxAbsScalerModel
+    MaxAbsScalerModel scalerModel = scaler.fit(dataFrame);
 
-    StructType schema = new StructType(new StructField[]{
-      new StructField(
-        "raw", DataTypes.createArrayType(DataTypes.StringType), false, Metadata.empty())
-    });
-
-    Dataset<Row> dataset = jsql.createDataFrame(rdd, schema);
-    remover.transform(dataset).show();
+    // rescale each feature to range [-1, 1].
+    Dataset<Row> scaledData = scalerModel.transform(dataFrame);
+    scaledData.show();
     // $example off$
     jsc.stop();
   }
+
 }
