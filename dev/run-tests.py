@@ -338,8 +338,6 @@ def build_spark_sbt(hadoop_version):
     sbt_goals = ["package",
                  "streaming-kafka-assembly/assembly",
                  "streaming-flume-assembly/assembly",
-                 "streaming-mqtt-assembly/assembly",
-                 "streaming-mqtt/test:assembly",
                  "streaming-kinesis-asl-assembly/assembly"]
     profiles_and_goals = build_profiles + sbt_goals
 

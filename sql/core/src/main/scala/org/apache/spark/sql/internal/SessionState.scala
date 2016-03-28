@@ -17,8 +17,9 @@
 
 package org.apache.spark.sql.internal
 
-import org.apache.spark.sql.{ContinuousQueryManager, SQLContext, UDFRegistration}
-import org.apache.spark.sql.catalyst.analysis.{Analyzer, Catalog, FunctionRegistry, SimpleCatalog}
+import org.apache.spark.sql.{ContinuousQueryManager, ExperimentalMethods, SQLContext, UDFRegistration}
+import org.apache.spark.sql.catalyst.analysis.{Analyzer, FunctionRegistry}
+import org.apache.spark.sql.catalyst.catalog.SessionCatalog
 import org.apache.spark.sql.catalyst.optimizer.Optimizer
 import org.apache.spark.sql.catalyst.parser.ParserInterface
 import org.apache.spark.sql.catalyst.rules.RuleExecutor
@@ -40,10 +41,12 @@ private[sql] class SessionState(ctx: SQLContext) {
    */
   lazy val conf = new SQLConf
 
+  lazy val experimentalMethods = new ExperimentalMethods
+
   /**
    * Internal catalog for managing table and database states.
    */
-  lazy val catalog: Catalog = new SimpleCatalog(conf)
+  lazy val catalog = new SessionCatalog(ctx.externalCatalog, conf)
 
   /**
    * Internal catalog for managing functions registered by the user.
@@ -66,14 +69,14 @@ private[sql] class SessionState(ctx: SQLContext) {
         DataSourceAnalysis ::
         (if (conf.runSQLOnFile) new ResolveDataSource(ctx) :: Nil else Nil)
 
-      override val extendedCheckRules = Seq(datasources.PreWriteCheck(catalog))
+      override val extendedCheckRules = Seq(datasources.PreWriteCheck(conf, catalog))
     }
   }
 
   /**
    * Logical query plan optimizer.
    */
-  lazy val optimizer: Optimizer = new SparkOptimizer(ctx)
+  lazy val optimizer: Optimizer = new SparkOptimizer(experimentalMethods)
 
   /**
    * Parser that extracts expressions, plans, table identifiers etc. from SQL texts.
@@ -83,7 +86,7 @@ private[sql] class SessionState(ctx: SQLContext) {
   /**
    * Planner that converts optimized logical plans to physical plans.
    */
-  lazy val planner: SparkPlanner = new SparkPlanner(ctx)
+  lazy val planner: SparkPlanner = new SparkPlanner(ctx.sparkContext, conf, experimentalMethods)
 
   /**
    * Prepares a planned [[SparkPlan]] for execution by inserting shuffle operations and internal
@@ -91,10 +94,10 @@ private[sql] class SessionState(ctx: SQLContext) {
    */
   lazy val prepareForExecution = new RuleExecutor[SparkPlan] {
     override val batches: Seq[Batch] = Seq(
-      Batch("Subquery", Once, PlanSubqueries(ctx)),
-      Batch("Add exchange", Once, EnsureRequirements(ctx)),
-      Batch("Whole stage codegen", Once, CollapseCodegenStages(ctx)),
-      Batch("Reuse duplicated exchanges", Once, ReuseExchange(ctx))
+      Batch("Subquery", Once, PlanSubqueries(SessionState.this)),
+      Batch("Add exchange", Once, EnsureRequirements(conf)),
+      Batch("Whole stage codegen", Once, CollapseCodegenStages(conf)),
+      Batch("Reuse duplicated exchanges", Once, ReuseExchange(conf))
     )
   }
 
