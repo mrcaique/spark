@@ -57,13 +57,12 @@ class FPGrowthModel(JavaModelWrapper, JavaSaveable, JavaLoader):
         """
         return self.call("getFreqItemsets").map(lambda x: (FPGrowth.FreqItemset(x[0], x[1])))
 
-<<<<<<< HEAD
     def generateAssociationRules(self, minConfidence=0.6):
         """
         Returns the association rules generated for this model.
         """
         return self.call("getAssociationRules", minConfidence).map(lambda x: (AssociationRules.Rule(x[0], x[1])))
-=======
+
     @classmethod
     @since("2.0.0")
     def load(cls, sc, path):
@@ -73,8 +72,6 @@ class FPGrowthModel(JavaModelWrapper, JavaSaveable, JavaLoader):
         model = cls._load_java(sc, path)
         wrapper = sc._jvm.FPGrowthModelWrapper(model)
         return FPGrowthModel(wrapper)
->>>>>>> upstream/master
-
 
 class FPGrowth(object):
     """
