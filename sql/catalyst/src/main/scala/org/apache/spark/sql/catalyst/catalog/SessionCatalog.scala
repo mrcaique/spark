@@ -28,7 +28,7 @@ import org.apache.spark.sql.catalyst.analysis.{FunctionRegistry, NoSuchFunctionE
 import org.apache.spark.sql.catalyst.analysis.FunctionRegistry.FunctionBuilder
 import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo}
 import org.apache.spark.sql.catalyst.plans.logical.{LogicalPlan, SubqueryAlias}
-
+import org.apache.spark.sql.catalyst.util.StringUtils
 
 /**
  * An internal catalog that is used by a Spark Session. This internal catalog serves as a
@@ -95,7 +95,7 @@ class SessionCatalog(
     externalCatalog.alterDatabase(dbDefinition)
   }
 
-  def getDatabase(db: String): CatalogDatabase = {
+  def getDatabaseMetadata(db: String): CatalogDatabase = {
     externalCatalog.getDatabase(db)
   }
 
@@ -169,7 +169,7 @@ class SessionCatalog(
    * If no database is specified, assume the table is in the current database.
    * If the specified table is not found in the database then an [[AnalysisException]] is thrown.
    */
-  def getTable(name: TableIdentifier): CatalogTable = {
+  def getTableMetadata(name: TableIdentifier): CatalogTable = {
     val db = name.database.getOrElse(currentDb)
     val table = formatTableName(name.table)
     externalCatalog.getTable(db, table)
@@ -297,17 +297,22 @@ class SessionCatalog(
   def listTables(db: String, pattern: String): Seq[TableIdentifier] = {
     val dbTables =
       externalCatalog.listTables(db, pattern).map { t => TableIdentifier(t, Some(db)) }
-    val regex = pattern.replaceAll("\\*", ".*").r
-    val _tempTables = tempTables.keys.toSeq
-      .filter { t => regex.pattern.matcher(t).matches() }
+    val _tempTables = StringUtils.filterPattern(tempTables.keys.toSeq, pattern)
       .map { t => TableIdentifier(t) }
     dbTables ++ _tempTables
   }
+
+  // TODO: It's strange that we have both refresh and invalidate here.
 
   /**
    * Refresh the cache entry for a metastore table, if any.
    */
   def refreshTable(name: TableIdentifier): Unit = { /* no-op */ }
+
+  /**
+   * Invalidate the cache entry for a metastore table, if any.
+   */
+  def invalidateTable(name: TableIdentifier): Unit = { /* no-op */ }
 
   /**
    * Drop all existing temporary tables.
@@ -430,28 +435,37 @@ class SessionCatalog(
    * Create a metastore function in the database specified in `funcDefinition`.
    * If no such database is specified, create it in the current database.
    */
-  def createFunction(funcDefinition: CatalogFunction): Unit = {
+  def createFunction(funcDefinition: CatalogFunction, ignoreIfExists: Boolean): Unit = {
     val db = funcDefinition.identifier.database.getOrElse(currentDb)
-    val newFuncDefinition = funcDefinition.copy(
-      identifier = FunctionIdentifier(funcDefinition.identifier.funcName, Some(db)))
-    externalCatalog.createFunction(db, newFuncDefinition)
+    val identifier = FunctionIdentifier(funcDefinition.identifier.funcName, Some(db))
+    val newFuncDefinition = funcDefinition.copy(identifier = identifier)
+    if (!functionExists(identifier)) {
+      externalCatalog.createFunction(db, newFuncDefinition)
+    } else if (!ignoreIfExists) {
+      throw new AnalysisException(s"function '$identifier' already exists in database '$db'")
+    }
   }
 
   /**
    * Drop a metastore function.
    * If no database is specified, assume the function is in the current database.
    */
-  def dropFunction(name: FunctionIdentifier): Unit = {
+  def dropFunction(name: FunctionIdentifier, ignoreIfNotExists: Boolean): Unit = {
     val db = name.database.getOrElse(currentDb)
-    val qualified = name.copy(database = Some(db)).unquotedString
-    if (functionRegistry.functionExists(qualified)) {
-      // If we have loaded this function into the FunctionRegistry,
-      // also drop it from there.
-      // For a permanent function, because we loaded it to the FunctionRegistry
-      // when it's first used, we also need to drop it from the FunctionRegistry.
-      functionRegistry.dropFunction(qualified)
+    val identifier = name.copy(database = Some(db))
+    if (functionExists(identifier)) {
+      // TODO: registry should just take in FunctionIdentifier for type safety
+      if (functionRegistry.functionExists(identifier.unquotedString)) {
+        // If we have loaded this function into the FunctionRegistry,
+        // also drop it from there.
+        // For a permanent function, because we loaded it to the FunctionRegistry
+        // when it's first used, we also need to drop it from the FunctionRegistry.
+        functionRegistry.dropFunction(identifier.unquotedString)
+      }
+      externalCatalog.dropFunction(db, name.funcName)
+    } else if (!ignoreIfNotExists) {
+      throw new AnalysisException(s"function '$identifier' does not exist in database '$db'")
     }
-    externalCatalog.dropFunction(db, name.funcName)
   }
 
   /**
@@ -460,8 +474,7 @@ class SessionCatalog(
    * If a database is specified in `name`, this will return the function in that database.
    * If no database is specified, this will return the function in the current database.
    */
-  // TODO: have a better name. This method is actually for fetching the metadata of a function.
-  def getFunction(name: FunctionIdentifier): CatalogFunction = {
+  def getFunctionMetadata(name: FunctionIdentifier): CatalogFunction = {
     val db = name.database.getOrElse(currentDb)
     externalCatalog.getFunction(db, name.funcName)
   }
@@ -470,20 +483,9 @@ class SessionCatalog(
    * Check if the specified function exists.
    */
   def functionExists(name: FunctionIdentifier): Boolean = {
-    if (functionRegistry.functionExists(name.unquotedString)) {
-      // This function exists in the FunctionRegistry.
-      true
-    } else {
-      // Need to check if this function exists in the metastore.
-      try {
-        // TODO: It's better to ask external catalog if this function exists.
-        // So, we can avoid of having this hacky try/catch block.
-        getFunction(name) != null
-      } catch {
-        case _: NoSuchFunctionException => false
-        case _: AnalysisException => false // HiveExternalCatalog wraps all exceptions with it.
-      }
-    }
+    val db = name.database.getOrElse(currentDb)
+    functionRegistry.functionExists(name.unquotedString) ||
+      externalCatalog.functionExists(db, name.funcName)
   }
 
   // ----------------------------------------------------------------
@@ -596,17 +598,50 @@ class SessionCatalog(
   }
 
   /**
+   * List all functions in the specified database, including temporary functions.
+   */
+  def listFunctions(db: String): Seq[FunctionIdentifier] = listFunctions(db, "*")
+
+  /**
    * List all matching functions in the specified database, including temporary functions.
    */
   def listFunctions(db: String, pattern: String): Seq[FunctionIdentifier] = {
     val dbFunctions =
       externalCatalog.listFunctions(db, pattern).map { f => FunctionIdentifier(f, Some(db)) }
-    val regex = pattern.replaceAll("\\*", ".*").r
-    val loadedFunctions = functionRegistry.listFunction()
-      .filter { f => regex.pattern.matcher(f).matches() }
+    val loadedFunctions = StringUtils.filterPattern(functionRegistry.listFunction(), pattern)
       .map { f => FunctionIdentifier(f) }
     // TODO: Actually, there will be dbFunctions that have been loaded into the FunctionRegistry.
     // So, the returned list may have two entries for the same function.
     dbFunctions ++ loadedFunctions
   }
+
+
+  // -----------------
+  // | Other methods |
+  // -----------------
+
+  /**
+   * Drop all existing databases (except "default") along with all associated tables,
+   * partitions and functions, and set the current database to "default".
+   *
+   * This is mainly used for tests.
+   */
+  private[sql] def reset(): Unit = {
+    val default = "default"
+    listDatabases().filter(_ != default).foreach { db =>
+      dropDatabase(db, ignoreIfNotExists = false, cascade = true)
+    }
+    tempTables.clear()
+    functionRegistry.clear()
+    // restore built-in functions
+    FunctionRegistry.builtin.listFunction().foreach { f =>
+      val expressionInfo = FunctionRegistry.builtin.lookupFunction(f)
+      val functionBuilder = FunctionRegistry.builtin.lookupFunctionBuilder(f)
+      require(expressionInfo.isDefined, s"built-in function '$f' is missing expression info")
+      require(functionBuilder.isDefined, s"built-in function '$f' is missing function builder")
+      functionRegistry.registerFunction(f, expressionInfo.get, functionBuilder.get)
+    }
+    setCurrentDatabase(default)
+  }
+
 }
