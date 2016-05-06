@@ -47,7 +47,9 @@ statement
     | createTableHeader ('(' colTypeList ')')? tableProvider
         (OPTIONS tablePropertyList)?                                   #createTableUsing
     | createTableHeader tableProvider
-        (OPTIONS tablePropertyList)? AS? query                         #createTableUsing
+        (OPTIONS tablePropertyList)?
+        (PARTITIONED BY partitionColumnNames=identifierList)?
+        bucketSpec? AS? query                                          #createTableUsing
     | createTableHeader ('(' columns=colTypeList ')')?
         (COMMENT STRING)?
         (PARTITIONED BY '(' partitionColumns=colTypeList ')')?
@@ -79,20 +81,10 @@ statement
         DROP (IF EXISTS)? partitionSpec (',' partitionSpec)* PURGE?    #dropTablePartitions
     | ALTER VIEW tableIdentifier
         DROP (IF EXISTS)? partitionSpec (',' partitionSpec)*           #dropTablePartitions
-    | ALTER TABLE tableIdentifier partitionSpec?
-        SET FILEFORMAT fileFormat                                      #setTableFileFormat
     | ALTER TABLE tableIdentifier partitionSpec? SET locationSpec      #setTableLocation
-    | ALTER TABLE tableIdentifier partitionSpec?
-        CHANGE COLUMN? oldName=identifier colType
-        (FIRST | AFTER after=identifier)? (CASCADE | RESTRICT)?        #changeColumn
-    | ALTER TABLE tableIdentifier partitionSpec?
-        ADD COLUMNS '(' colTypeList ')' (CASCADE | RESTRICT)?          #addColumns
-    | ALTER TABLE tableIdentifier partitionSpec?
-        REPLACE COLUMNS '(' colTypeList ')' (CASCADE | RESTRICT)?      #replaceColumns
-    | DROP TABLE (IF EXISTS)? tableIdentifier PURGE?
-        (FOR METADATA? REPLICATION '(' STRING ')')?                    #dropTable
+    | DROP TABLE (IF EXISTS)? tableIdentifier PURGE?                   #dropTable
     | DROP VIEW (IF EXISTS)? tableIdentifier                           #dropTable
-    | CREATE (OR REPLACE)? VIEW (IF NOT EXISTS)? tableIdentifier
+    | CREATE (OR REPLACE)? TEMPORARY? VIEW (IF NOT EXISTS)? tableIdentifier
         identifierCommentList? (COMMENT STRING)?
         (PARTITIONED ON identifierList)?
         (TBLPROPERTIES tablePropertyList)? AS query                    #createView
@@ -106,8 +98,11 @@ statement
     | SHOW DATABASES (LIKE pattern=STRING)?                            #showDatabases
     | SHOW TBLPROPERTIES table=tableIdentifier
         ('(' key=tablePropertyKey ')')?                                #showTblProperties
+    | SHOW COLUMNS (FROM | IN) tableIdentifier
+        ((FROM | IN) db=identifier)?                                   #showColumns
+    | SHOW PARTITIONS tableIdentifier partitionSpec?                   #showPartitions
     | SHOW FUNCTIONS (LIKE? (qualifiedName | pattern=STRING))?         #showFunctions
-    | (DESC | DESCRIBE) FUNCTION EXTENDED? qualifiedName               #describeFunction
+    | (DESC | DESCRIBE) FUNCTION EXTENDED? describeFuncName            #describeFunction
     | (DESC | DESCRIBE) option=(EXTENDED | FORMATTED)?
         tableIdentifier partitionSpec? describeColName?                #describeTable
     | (DESC | DESCRIBE) DATABASE EXTENDED? identifier                  #describeDatabase
@@ -116,25 +111,13 @@ statement
     | UNCACHE TABLE identifier                                         #uncacheTable
     | CLEAR CACHE                                                      #clearCache
     | LOAD DATA LOCAL? INPATH path=STRING OVERWRITE? INTO TABLE
-      tableIdentifier partitionSpec?                                   #loadData
+        tableIdentifier partitionSpec?                                 #loadData
+    | TRUNCATE TABLE tableIdentifier partitionSpec?
+        (COLUMNS identifierList)?                                      #truncateTable
     | ADD identifier .*?                                               #addResource
     | SET ROLE .*?                                                     #failNativeCommand
     | SET .*?                                                          #setConfiguration
-    | kws=unsupportedHiveNativeCommands .*?                            #failNativeCommand
-    | hiveNativeCommands                                               #executeNativeCommand
-    ;
-
-hiveNativeCommands
-    : DELETE FROM tableIdentifier (WHERE booleanExpression)?
-    | TRUNCATE TABLE tableIdentifier partitionSpec?
-        (COLUMNS identifierList)?
-    | SHOW COLUMNS (FROM | IN) tableIdentifier ((FROM|IN) identifier)?
-    | START TRANSACTION (transactionMode (',' transactionMode)*)?
-    | COMMIT WORK?
-    | ROLLBACK WORK?
-    | SHOW PARTITIONS tableIdentifier partitionSpec?
-    | DFS .*?
-    | (CREATE | ALTER | DROP | SHOW | DESC | DESCRIBE) .*?
+    | unsupportedHiveNativeCommands .*?                                #failNativeCommand
     ;
 
 unsupportedHiveNativeCommands
@@ -177,6 +160,15 @@ unsupportedHiveNativeCommands
     | kw1=ALTER kw2=TABLE tableIdentifier kw3=TOUCH
     | kw1=ALTER kw2=TABLE tableIdentifier partitionSpec? kw3=COMPACT
     | kw1=ALTER kw2=TABLE tableIdentifier partitionSpec? kw3=CONCATENATE
+    | kw1=ALTER kw2=TABLE tableIdentifier partitionSpec? kw3=SET kw4=FILEFORMAT
+    | kw1=ALTER kw2=TABLE tableIdentifier partitionSpec? kw3=ADD kw4=COLUMNS
+    | kw1=ALTER kw2=TABLE tableIdentifier partitionSpec? kw3=CHANGE kw4=COLUMNS?
+    | kw1=ALTER kw2=TABLE tableIdentifier partitionSpec? kw3=REPLACE kw4=COLUMNS
+    | kw1=START kw2=TRANSACTION
+    | kw1=COMMIT
+    | kw1=ROLLBACK
+    | kw1=DFS
+    | kw1=DELETE kw2=FROM
     ;
 
 createTableHeader
@@ -220,6 +212,14 @@ partitionVal
     : identifier (EQ constant)?
     ;
 
+describeFuncName
+    : qualifiedName
+    | STRING
+    | comparisonOperator
+    | arithmeticOperator
+    | predicateOperator
+    ;
+
 describeColName
     : identifier ('.' (identifier | STRING))*
     ;
@@ -255,14 +255,6 @@ constantList
 
 nestedConstantList
     : '(' constantList (',' constantList)* ')'
-    ;
-
-skewedLocation
-    : (constant | constantList) EQ STRING
-    ;
-
-skewedLocationList
-    : '(' skewedLocation (',' skewedLocation)* ')'
     ;
 
 createFileFormat
@@ -391,7 +383,8 @@ sample
     : TABLESAMPLE '('
       ( (percentage=(INTEGER_VALUE | DECIMAL_VALUE) sampleType=PERCENTLIT)
       | (expression sampleType=ROWS)
-      | (sampleType=BUCKET numerator=INTEGER_VALUE OUT OF denominator=INTEGER_VALUE (ON identifier)?))
+      | sampleType=BYTELENGTH_LITERAL
+      | (sampleType=BUCKET numerator=INTEGER_VALUE OUT OF denominator=INTEGER_VALUE (ON (identifier | qualifiedName '(' ')'))?))
       ')'
     ;
 
@@ -519,6 +512,14 @@ comparisonOperator
     : EQ | NEQ | NEQJ | LT | LTE | GT | GTE | NSEQ
     ;
 
+arithmeticOperator
+    : PLUS | MINUS | ASTERISK | SLASH | PERCENT | DIV | TILDE | AMPERSAND | PIPE | HAT
+    ;
+
+predicateOperator
+    : OR | AND | IN | NOT
+    ;
+
 booleanValue
     : TRUE | FALSE
     ;
@@ -591,11 +592,6 @@ explainOption
     : LOGICAL | FORMATTED | EXTENDED | CODEGEN
     ;
 
-transactionMode
-    : ISOLATION LEVEL SNAPSHOT            #isolationLevel
-    | READ accessMode=(ONLY | WRITE)      #transactionAccessMode
-    ;
-
 qualifiedName
     : identifier ('.' identifier)*
     ;
@@ -643,12 +639,11 @@ nonReserved
     | VIEW | REPLACE
     | IF
     | NO | DATA
-    | START | TRANSACTION | COMMIT | ROLLBACK | WORK | ISOLATION | LEVEL
-    | SNAPSHOT | READ | WRITE | ONLY
+    | START | TRANSACTION | COMMIT | ROLLBACK
     | SORT | CLUSTER | DISTRIBUTE | UNSET | TBLPROPERTIES | SKEWED | STORED | DIRECTORIES | LOCATION
-    | EXCHANGE | ARCHIVE | UNARCHIVE | FILEFORMAT | TOUCH | COMPACT | CONCATENATE | CHANGE | FIRST
-    | AFTER | CASCADE | RESTRICT | BUCKETS | CLUSTERED | SORTED | PURGE | INPUTFORMAT | OUTPUTFORMAT
-    | DBPROPERTIES | DFS | TRUNCATE | METADATA | REPLICATION | COMPUTE
+    | EXCHANGE | ARCHIVE | UNARCHIVE | FILEFORMAT | TOUCH | COMPACT | CONCATENATE | CHANGE
+    | CASCADE | RESTRICT | BUCKETS | CLUSTERED | SORTED | PURGE | INPUTFORMAT | OUTPUTFORMAT
+    | DBPROPERTIES | DFS | TRUNCATE | COMPUTE
     | STATISTICS | ANALYZE | PARTITIONED | EXTERNAL | DEFINED | RECORDWRITER
     | REVOKE | GRANT | LOCK | UNLOCK | MSCK | REPAIR | EXPORT | IMPORT | LOAD | VALUES | COMMENT | ROLE
     | ROLES | COMPACTIONS | PRINCIPALS | TRANSACTIONS | INDEX | INDEXES | LOCKS | OPTION | LOCAL | INPATH
@@ -760,13 +755,6 @@ START: 'START';
 TRANSACTION: 'TRANSACTION';
 COMMIT: 'COMMIT';
 ROLLBACK: 'ROLLBACK';
-WORK: 'WORK';
-ISOLATION: 'ISOLATION';
-LEVEL: 'LEVEL';
-SNAPSHOT: 'SNAPSHOT';
-READ: 'READ';
-WRITE: 'WRITE';
-ONLY: 'ONLY';
 MACRO: 'MACRO';
 
 IF: 'IF';
@@ -842,8 +830,6 @@ TOUCH: 'TOUCH';
 COMPACT: 'COMPACT';
 CONCATENATE: 'CONCATENATE';
 CHANGE: 'CHANGE';
-FIRST: 'FIRST';
-AFTER: 'AFTER';
 CASCADE: 'CASCADE';
 RESTRICT: 'RESTRICT';
 CLUSTERED: 'CLUSTERED';
@@ -855,8 +841,6 @@ DATABASE: 'DATABASE' | 'SCHEMA';
 DATABASES: 'DATABASES' | 'SCHEMAS';
 DFS: 'DFS';
 TRUNCATE: 'TRUNCATE';
-METADATA: 'METADATA';
-REPLICATION: 'REPLICATION';
 ANALYZE: 'ANALYZE';
 COMPUTE: 'COMPUTE';
 STATISTICS: 'STATISTICS';
@@ -900,6 +884,10 @@ SMALLINT_LITERAL
 
 TINYINT_LITERAL
     : DIGIT+ 'Y'
+    ;
+
+BYTELENGTH_LITERAL
+    : DIGIT+ ('B' | 'K' | 'M' | 'G')
     ;
 
 INTEGER_VALUE

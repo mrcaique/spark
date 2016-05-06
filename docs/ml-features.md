@@ -1118,6 +1118,15 @@ for more details on the API.
 
 {% include_example java/org/apache/spark/examples/ml/JavaQuantileDiscretizerExample.java %}
 </div>
+
+<div data-lang="python" markdown="1">
+
+Refer to the [QuantileDiscretizer Python docs](api/python/pyspark.ml.html#pyspark.ml.feature.QuantileDiscretizer)
+for more details on the API.
+
+{% include_example python/ml/quantile_discretizer_example.py %}
+</div>
+
 </div>
 
 # Feature Selectors
@@ -1190,6 +1199,14 @@ Refer to the [VectorSlicer Java docs](api/java/org/apache/spark/ml/feature/Vecto
 for more details on the API.
 
 {% include_example java/org/apache/spark/examples/ml/JavaVectorSlicerExample.java %}
+</div>
+
+<div data-lang="python" markdown="1">
+
+Refer to the [VectorSlicer Python docs](api/python/pyspark.ml.html#pyspark.ml.feature.VectorSlicer)
+for more details on the API.
+
+{% include_example python/ml/vector_slicer_example.py %}
 </div>
 </div>
 
