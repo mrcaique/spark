@@ -35,6 +35,7 @@ import org.apache.spark.sql.execution.joins.BroadcastNestedLoopJoinExec
 import org.apache.spark.sql.hive._
 import org.apache.spark.sql.hive.test.{TestHive, TestHiveContext}
 import org.apache.spark.sql.hive.test.TestHive._
+import org.apache.spark.sql.internal.SQLConf
 
 case class TestData(a: Int, b: String)
 
@@ -48,6 +49,8 @@ class HiveQuerySuite extends HiveComparisonTest with BeforeAndAfter {
 
   import org.apache.spark.sql.hive.test.TestHive.implicits._
 
+  private val originalCrossJoinEnabled = TestHive.conf.crossJoinEnabled
+
   override def beforeAll() {
     super.beforeAll()
     TestHive.setCacheTables(true)
@@ -55,6 +58,8 @@ class HiveQuerySuite extends HiveComparisonTest with BeforeAndAfter {
     TimeZone.setDefault(TimeZone.getTimeZone("America/Los_Angeles"))
     // Add Locale setting
     Locale.setDefault(Locale.US)
+    // Ensures that cross joins are enabled so that we can test them
+    TestHive.setConf(SQLConf.CROSS_JOINS_ENABLED, true)
   }
 
   override def afterAll() {
@@ -63,6 +68,7 @@ class HiveQuerySuite extends HiveComparisonTest with BeforeAndAfter {
       TimeZone.setDefault(originalTimeZone)
       Locale.setDefault(originalLocale)
       sql("DROP TEMPORARY FUNCTION IF EXISTS udtf_count2")
+      TestHive.setConf(SQLConf.CROSS_JOINS_ENABLED, originalCrossJoinEnabled)
     } finally {
       super.afterAll()
     }
@@ -685,12 +691,12 @@ class HiveQuerySuite extends HiveComparisonTest with BeforeAndAfter {
   createQueryTest("case sensitivity when query Hive table",
     "SELECT srcalias.KEY, SRCALIAS.value FROM sRc SrCAlias WHERE SrCAlias.kEy < 15")
 
-  test("case sensitivity: registered table") {
+  test("case sensitivity: created temporary view") {
     val testData =
       TestHive.sparkContext.parallelize(
         TestData(1, "str1") ::
         TestData(2, "str2") :: Nil)
-    testData.toDF().registerTempTable("REGisteredTABle")
+    testData.toDF().createOrReplaceTempView("REGisteredTABle")
 
     assertResult(Array(Row(2, "str2"))) {
       sql("SELECT tablealias.A, TABLEALIAS.b FROM reGisteredTABle TableAlias " +
@@ -715,7 +721,7 @@ class HiveQuerySuite extends HiveComparisonTest with BeforeAndAfter {
   test("SPARK-2180: HAVING support in GROUP BY clauses (positive)") {
     val fixture = List(("foo", 2), ("bar", 1), ("foo", 4), ("bar", 3))
       .zipWithIndex.map {case ((value, attr), key) => HavingRow(key, value, attr)}
-    TestHive.sparkContext.parallelize(fixture).toDF().registerTempTable("having_test")
+    TestHive.sparkContext.parallelize(fixture).toDF().createOrReplaceTempView("having_test")
     val results =
       sql("SELECT value, max(attr) AS attr FROM having_test GROUP BY value HAVING attr > 3")
       .collect()
@@ -819,12 +825,12 @@ class HiveQuerySuite extends HiveComparisonTest with BeforeAndAfter {
         .collect()
     }
 
-    // Describe a registered temporary table.
+    // Describe a temporary view.
     val testData =
       TestHive.sparkContext.parallelize(
         TestData(1, "str1") ::
         TestData(1, "str2") :: Nil)
-    testData.toDF().registerTempTable("test_describe_commands2")
+    testData.toDF().createOrReplaceTempView("test_describe_commands2")
 
     assertResult(
       Array(
@@ -996,9 +1002,9 @@ class HiveQuerySuite extends HiveComparisonTest with BeforeAndAfter {
     }
   }
 
-  test("SPARK-3414 regression: should store analyzed logical plan when registering a temp table") {
-    sparkContext.makeRDD(Seq.empty[LogEntry]).toDF().registerTempTable("rawLogs")
-    sparkContext.makeRDD(Seq.empty[LogFile]).toDF().registerTempTable("logFiles")
+  test("SPARK-3414 regression: should store analyzed logical plan when creating a temporary view") {
+    sparkContext.makeRDD(Seq.empty[LogEntry]).toDF().createOrReplaceTempView("rawLogs")
+    sparkContext.makeRDD(Seq.empty[LogFile]).toDF().createOrReplaceTempView("logFiles")
 
     sql(
       """
@@ -1009,7 +1015,7 @@ class HiveQuerySuite extends HiveComparisonTest with BeforeAndAfter {
         FROM logFiles
       ) files
       ON rawLogs.filename = files.name
-      """).registerTempTable("boom")
+      """).createOrReplaceTempView("boom")
 
     // This should be successfully analyzed
     sql("SELECT * FROM boom").queryExecution.analyzed
