@@ -30,6 +30,7 @@ import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.logical.LeafNode
 import org.apache.spark.sql.streaming.OutputMode
 import org.apache.spark.sql.types.StructType
+import org.apache.spark.util.Utils
 
 object MemoryStream {
   protected val currentBlockId = new AtomicInteger(0)
@@ -76,12 +77,12 @@ case class MemoryStream[A : Encoder](id: Int, sqlContext: SQLContext)
     logDebug(s"Adding ds: $ds")
     this.synchronized {
       currentOffset = currentOffset + 1
-      batches.append(ds)
+      batches += ds
       currentOffset
     }
   }
 
-  override def toString: String = s"MemoryStream[${output.mkString(",")}]"
+  override def toString: String = s"MemoryStream[${Utils.truncatedString(output, ",")}]"
 
   override def getOffset: Option[Offset] = synchronized {
     if (batches.isEmpty) {
@@ -109,6 +110,8 @@ case class MemoryStream[A : Encoder](id: Int, sqlContext: SQLContext)
         sys.error("No data selected!")
       }
   }
+
+  override def stop() {}
 }
 
 /**
@@ -152,7 +155,7 @@ class MemorySink(val schema: StructType, outputMode: OutputMode) extends Sink wi
 
         case InternalOutputModes.Complete =>
           batches.clear()
-          batches.append(AddedData(batchId, data.collect()))
+          batches += AddedData(batchId, data.collect())
 
         case _ =>
           throw new IllegalArgumentException(

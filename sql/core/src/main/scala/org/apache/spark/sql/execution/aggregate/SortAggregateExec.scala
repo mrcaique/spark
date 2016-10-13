@@ -25,6 +25,7 @@ import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.plans.physical.{AllTuples, ClusteredDistribution, Distribution, UnspecifiedDistribution}
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.execution.metric.SQLMetrics
+import org.apache.spark.util.Utils
 
 /**
  * Sort-based aggregate operator.
@@ -48,15 +49,15 @@ case class SortAggregateExec(
       AttributeSet(resultExpressions.diff(groupingExpressions).map(_.toAttribute)) ++
       AttributeSet(aggregateBufferAttributes)
 
-  override private[sql] lazy val metrics = Map(
+  override lazy val metrics = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
 
   override def output: Seq[Attribute] = resultExpressions.map(_.toAttribute)
 
   override def requiredChildDistribution: List[Distribution] = {
     requiredChildDistributionExpressions match {
-      case Some(exprs) if exprs.length == 0 => AllTuples :: Nil
-      case Some(exprs) if exprs.length > 0 => ClusteredDistribution(exprs) :: Nil
+      case Some(exprs) if exprs.isEmpty => AllTuples :: Nil
+      case Some(exprs) if exprs.nonEmpty => ClusteredDistribution(exprs) :: Nil
       case None => UnspecifiedDistribution :: Nil
     }
   }
@@ -103,12 +104,20 @@ case class SortAggregateExec(
     }
   }
 
-  override def simpleString: String = {
+  override def simpleString: String = toString(verbose = false)
+
+  override def verboseString: String = toString(verbose = true)
+
+  private def toString(verbose: Boolean): String = {
     val allAggregateExpressions = aggregateExpressions
 
-    val keyString = groupingExpressions.mkString("[", ",", "]")
-    val functionString = allAggregateExpressions.mkString("[", ",", "]")
-    val outputString = output.mkString("[", ",", "]")
-    s"SortAggregate(key=$keyString, functions=$functionString, output=$outputString)"
+    val keyString = Utils.truncatedString(groupingExpressions, "[", ", ", "]")
+    val functionString = Utils.truncatedString(allAggregateExpressions, "[", ", ", "]")
+    val outputString = Utils.truncatedString(output, "[", ", ", "]")
+    if (verbose) {
+      s"SortAggregate(key=$keyString, functions=$functionString, output=$outputString)"
+    } else {
+      s"SortAggregate(key=$keyString, functions=$functionString)"
+    }
   }
 }

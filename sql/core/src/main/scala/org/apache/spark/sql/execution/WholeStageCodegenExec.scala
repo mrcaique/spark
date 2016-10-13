@@ -29,6 +29,7 @@ import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, SortMergeJoi
 import org.apache.spark.sql.execution.metric.SQLMetrics
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
+import org.apache.spark.util.Utils
 
 /**
  * An interface for those physical operators that support codegen.
@@ -250,8 +251,9 @@ case class InputAdapter(child: SparkPlan) extends UnaryExecNode with CodegenSupp
       depth: Int,
       lastChildren: Seq[Boolean],
       builder: StringBuilder,
+      verbose: Boolean,
       prefix: String = ""): StringBuilder = {
-    child.generateTreeString(depth, lastChildren, builder, "")
+    child.generateTreeString(depth, lastChildren, builder, verbose, "")
   }
 }
 
@@ -293,7 +295,7 @@ case class WholeStageCodegenExec(child: SparkPlan) extends UnaryExecNode with Co
   override def outputPartitioning: Partitioning = child.outputPartitioning
   override def outputOrdering: Seq[SortOrder] = child.outputOrdering
 
-  override private[sql] lazy val metrics = Map(
+  override lazy val metrics = Map(
     "pipelineTime" -> SQLMetrics.createTimingMetric(sparkContext,
       WholeStageCodegenExec.PIPELINE_DURATION_METRIC))
 
@@ -314,14 +316,16 @@ case class WholeStageCodegenExec(child: SparkPlan) extends UnaryExecNode with Co
       final class GeneratedIterator extends org.apache.spark.sql.execution.BufferedRowIterator {
 
         private Object[] references;
+        private scala.collection.Iterator[] inputs;
         ${ctx.declareMutableStates()}
 
         public GeneratedIterator(Object[] references) {
           this.references = references;
         }
 
-        public void init(int index, scala.collection.Iterator inputs[]) {
+        public void init(int index, scala.collection.Iterator[] inputs) {
           partitionIndex = index;
+          this.inputs = inputs;
           ${ctx.initMutableStates()}
         }
 
@@ -338,12 +342,20 @@ case class WholeStageCodegenExec(child: SparkPlan) extends UnaryExecNode with Co
       new CodeAndComment(CodeFormatter.stripExtraNewLines(source), ctx.getPlaceHolderToComments()))
 
     logDebug(s"\n${CodeFormatter.format(cleanedSource)}")
-    CodeGenerator.compile(cleanedSource)
     (ctx, cleanedSource)
   }
 
   override def doExecute(): RDD[InternalRow] = {
     val (ctx, cleanedSource) = doCodeGen()
+    // try to compile and fallback if it failed
+    try {
+      CodeGenerator.compile(cleanedSource)
+    } catch {
+      case e: Exception if !Utils.isTesting && sqlContext.conf.wholeStageFallback =>
+        // We should already saw the error message
+        logWarning(s"Whole-stage codegen disabled for this plan:\n $treeString")
+        return child.execute()
+    }
     val references = ctx.references.toArray
 
     val durationMs = longMetric("pipelineTime")
@@ -407,8 +419,9 @@ case class WholeStageCodegenExec(child: SparkPlan) extends UnaryExecNode with Co
       depth: Int,
       lastChildren: Seq[Boolean],
       builder: StringBuilder,
+      verbose: Boolean,
       prefix: String = ""): StringBuilder = {
-    child.generateTreeString(depth, lastChildren, builder, "*")
+    child.generateTreeString(depth, lastChildren, builder, verbose, "*")
   }
 }
 
